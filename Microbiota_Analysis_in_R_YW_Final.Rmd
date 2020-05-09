@@ -1,0 +1,509 @@
+---
+title: "Microbiota Analysis in R - ANSC595 Final Project"
+author: "Yu Wang"
+date: "May 1, 2020"
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+  pdf_document: default
+editor_options: 
+  chunk_output_type: console
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_knit$set(root.dir = '~/Downloads/Yu_Microbiota_Analysis/')
+```
+
+#Modified from the original online version available at http://rpubs.com/dillmcfarlan/R_microbiotaSOP
+#Written for R v3.3.2 in RStudio v1.0.136
+
+#set up
+##Download and install
+* Base R: http://cran.mtu.edu/
+* RStudio: https://www.rstudio.com/products/rstudio/download3/
+* Packages: Open RStudio on your computer. If you have not already downloaded these packages, go to the lower right quadrant of your screen and open the Package tab. Click "download" and search for the package you want to download.
+    + `ape`
+    + `dplyr`
+    + `ggplot2`
+    + `gplots`
+    + `lme4`
+    + `phangorn`
+    + `plotly`
+    + `tidyr`
+    + `vegan`
+    + `VennDiagram`
+    + `phyloseq` (`phyloseq` is not on CRAN, so we have to call it manually. See below.)
+Copy and paste the following into your console only if you need to install phyloseq. If you previously install phyloseq you don't need to do this again.
+```{r}
+source("https://bioconductor.org/biocLite.R")
+biocLite("phyloseq")
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(version = "3.10")
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("phyloseq")
+```
+
+#Data manipulation
+##Load Packages
+```{r Load packages, results="hide"}
+#Analyses of Phylogenetics and Evolution package. Required for tree calculations to be used with phyloseq
+install.packages("ape")
+install.packages("phangorn")
+install.packages("VennDiagram")
+
+library(ape)
+
+#This package will also help us more easily manipulate our data
+library(dplyr)
+
+#Graphing package used in phyloseq. To edit the default setting of a plot, you need to use functions in this package.
+library(ggplot2)
+
+#This package is used to calculate and plot Venn diagrams as well as heatmaps
+library(gplots)
+
+#Linear mixed-effects models like repeated measures analysis
+library(lme4)
+
+#used to read in mothur-formatted files
+library(phangorn)
+
+#The phyloseq package seeks to address issues with multiple microbiome analysis packages by providing a set of functions that internally manage the organizing, linking, storing, and analyzing of phylogenetic sequencing data. In general, this package is used for UniFrac analyses.
+library(phyloseq)
+
+#A package to create interactive web graphics of use in 3D plots
+library(plotly)
+
+#This package will help us more easily manipulate our data, which are matrices
+library(tidyr)
+
+#The vegan package provides tools for descriptive community ecology. It has most basic functions of diversity analysis, community ordination and dissimilarity analysis. In general, this package is used for Bray-Curtis and Jaccard analyses.
+library(vegan)
+
+#Pretty Venn disgrams
+library(VennDiagram)
+
+#Clean up taxonomy table
+install.packages("naniar")
+library(naniar)
+library(zoo)
+```
+
+##Load data from Mothur output
+```{r}
+#OTU table (shared file)
+OTU = read.table("~/Downloads/Yu_Microbiota_Analysis/Data/stability.opti_mcc.0.03.subsample.shared", header=TRUE, sep="\t")
+
+#Taxonomy of each OTU
+tax = read.table("~/Downloads/Yu_Microbiota_Analysis/Data/stability.taxonomy", header=TRUE, sep="\t")
+
+#Metadata. Since we made this in Excel, not mothur, we can use the "row.names" modifier to automatically name the rows by the values in the first column (sample names)
+#meta = read.table("~/Downloads/Yu_Microbiota_Analysis/Data/mouse.group.design", header=TRUE, row.names=1, sep="\t")
+meta = read.table("~/Downloads/Yu_Microbiota_Analysis/Data/metadata2.txt", header=TRUE, row.names=1, sep="\t")
+
+
+data = read.table("~/Downloads/Yu_Microbiota_Analysis/Data/stability.opti_mcc.groups.ave-std.summary", header=TRUE, sep="\t")
+
+```
+
+#Clean up the data
+##OTU table
+```{r}
+row.names(OTU) = OTU$Group
+OTU.clean = OTU[,-which(names(OTU) %in% c("label", "numOtus", "Group"))]
+```
+
+##Taxonomy table
+```{r}
+#remove (number) using gsub
+tax$Taxonomy <- gsub(pattern = "[(]\\d*[)]", replacement = "", x=tax$Taxonomy)
+tax2 = separate(tax, Taxonomy, into = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep=";")
+```
+
+##clean
+```{r}
+row.names(tax2) <- tax2[,1]
+tax.clean <- as.data.frame(tax2)[,-1:-2]
+```
+
+###Remove all the OTUs that don't occur in the OTU.clean data set
+```{r}
+tax.clean = tax.clean[row.names(tax.clean) %in% colnames(OTU.clean),]
+```
+```
+
+##Alpha Diversity tables
+###merge meta and data files
+```{r}
+meta = merge(meta, data[1:45,], by.x = 0, by.y = "group")
+row.names(meta) = meta$Row.names
+meta = meta[,-1]
+```
+
+###Order the data
+```{r Order the data}
+OTU.clean = OTU.clean[order(row.names(OTU.clean)),]
+meta = meta[order(row.names(meta)),]
+```
+
+##Set seed
+```{r}
+set.seed(8765)
+```
+
+
+#Alpha-diversity
+```{r}
+#Create 2x2 plot environment 
+par(mfrow = c(2, 2))
+
+#Plots
+hist(meta$shannon, main="Shannon's diversity", xlab="", breaks=10)
+hist(meta$invsimpson, main="Simpson's diversity", xlab="", breaks=10)
+hist(meta$ace, main="ACE richness", xlab="", breaks=15)
+hist(meta$chao, main="Chao richness", xlab="", breaks=15)
+```
+
+##To test for normalcy statistically, run the Shapiro-Wilk test of normality.
+```{r}
+shapiro.test(meta$shannon)
+shapiro.test(meta$invsimpson)
+shapiro.test(meta$ace)
+shapiro.test(meta$chao)
+```
+
+#Only chao is normally distributed (p<0.05). However, our sample size is small and normalcy tests are very sensitive for small data-sets.So we should run statistical tests that don't assume our data is normal.
+
+**Non-normally distributed metrics**
+```{r}
+kruskal.test(chao ~ Treatment, data=meta)
+kruskal.test(shannon ~ Treatment, data=meta)
+kruskal.test(invsimpson ~ Treatment, data=meta)
+kruskal.test(ace ~ Treatment, data=meta)
+```
+#We can test pairwise within the age groups with Wilcoxon Rank Sum Tests.s
+```{r}
+pairwise.wilcox.test(meta$shannon, meta$Genotype, p.adjust.method="fdr")
+pairwise.wilcox.test(meta$shannon, meta$Diet, p.adjust.method="fdr")
+
+pairwise.wilcox.test(meta$invsimpson, meta$Genotype, p.adjust.method="fdr")
+pairwise.wilcox.test(meta$invsimpson, meta$Diet, p.adjust.method="fdr")
+
+pairwise.wilcox.test(meta$ace, meta$Genotype, p.adjust.method="fdr")
+pairwise.wilcox.test(meta$ace, meta$Diet, p.adjust.method="fdr")
+
+pairwise.wilcox.test(meta$chao, meta$Genotype, p.adjust.method="fdr")
+pairwise.wilcox.test(meta$chao, meta$Diet, p.adjust.method="fdr")
+```
+#normal plot
+```{r}
+par(mfrow = c(1, 1))
+boxplot(chao ~ Treatment, data=meta, ylab="Chao richness")
+
+par(mfrow = c(1, 1))
+boxplot(shannon ~ Treatment, data=meta, ylab="Shannon's diversity")
+
+par(mfrow = c(1, 1))
+boxplot(invsimpson ~ Treatment, data=meta, ylab="Simpson's diversity")
+
+par(mfrow = c(1, 1))
+boxplot(ace ~ Treatment, data=meta, ylab="Chao richness")
+```
+#ggplot alpha diversity
+```{r}
+shannon <- ggplot(meta, aes(Treatment.ord, shannon)) +
+  geom_boxplot(aes(color = Treatment.ord)) +
+  #ylim(c(0.5,1)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  theme(legend.title = element_blank()) +
+  labs(y="Shannon's Diversity", x = "") 
+ggsave("~/Downloads/Yu_Microbiota_Analysis/Output/shannon.png", shannon, height = 3, width = 3)
+
+invsimpson <- ggplot(meta, aes(Treatment.ord, invsimpson)) +
+  geom_boxplot(aes(color = Treatment.ord)) +
+  #ylim(c(0.5,1)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  theme(legend.title = element_blank()) +
+  labs(y="Simpson's Diversity", x = "") 
+ggsave("~/Downloads/Yu_Microbiota_Analysis/Output/simpson.png", invsimpson, height = 3, width = 3)
+
+ace <- ggplot(meta, aes(Treatment.ord, ace)) +
+  geom_boxplot(aes(color = Treatment.ord)) +
+  #ylim(c(0.5,1)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  theme(legend.title = element_blank()) +
+  labs(y="ACE Richness", x = "") 
+ggsave("~/Downloads/Yu_Microbiota_Analysis/Output/ace.png", ace, height = 3, width = 3)
+
+chao <- ggplot(meta, aes(Treatment.ord, chao)) +
+  geom_boxplot(aes(color = Treatment.ord)) +
+  #ylim(c(0.5,1)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  theme(legend.title = element_blank()) +
+  labs(y="Chao's Richness", x = "") 
+ggsave("~/Downloads/Yu_Microbiota_Analysis/Output/chao.png", chao, height = 3, width = 3)
+```
+
+#YW: p<0.05, there's interaction between diet and genotype
+```{r}
+aov.shannon.all = aov(shannon ~ Diet*Genotype, data=meta)
+summary(aov.shannon.all)
+```
+
+#YW:
+```{r}
+aov.ace.all2 = aov(ace ~ Diet+Genotype, data=meta)
+summary(aov.ace.all2)
+```
+
+Overall, the ANOVA test tells us that diet and genotype are both significant.
+
+#YW:
+```{r}
+TukeyHSD(aov.ace.all2)
+```
+
+
+#Beta-diversity
+
+```{r}
+BC.nmds = metaMDS(OTU.clean, distance="bray", k=2, trymax=1000)
+
+```
+
+```{r}
+factor(meta$Treatment)
+#if running line-by-line run this entire block at one time.
+my_colors = c("blue", "green", "red", "black")
+par(mfrow = c(1, 1))
+#Create a blank plot for the nmds
+plot(BC.nmds, type="n", main="Bray-Curtis") 
+#Add the points colored by age
+points(BC.nmds$points, display="Treatment", pch=20, col=my_colors[meta$Treatment])
+#Add a legend
+legend(-5, 2.5, legend=levels(meta$Treatment), col=my_colors, pch=20)
+
+```
+
+#YW:Error in match.arg(display) : 'arg' should be one of “sites”, “species” ****missing
+```{r}
+J.nmds = metaMDS(OTU.clean, distance="jaccard", k=2, trymax=1000)
+
+plot(J.nmds, type="n", main="Jaccard")
+points(J.nmds, display="sites", pch=20, col=c("blue", "green", "red","black")[meta$Treatment])
+legend(-3, 1.5, legend=c("wsoy","csoy","wpsm","cpsm"), col=c("green","red","blue","black"), pch=20)
+```
+
+#with ggplot2 
+#ggplot2 BC plot
+```{r}
+BC.nmds$stress
+
+nmds <-as.data.frame(BC.nmds$points)
+metanmds <- merge(meta, nmds, by.x = 0, by.y = 0)
+row.names(metanmds) <- metanmds[,1]
+metanmds <- metanmds[,-1]
+str(metanmds)
+metanmds$Treatment <- factor(metanmds$Treatment)
+
+#The following line you may need to modify to indicate the column numbers that contain MDS1 and MDS2
+NMDS.mean <- aggregate(metanmds[,23:24], list(group=metanmds$Treatment), mean)
+colnames(NMDS.mean) <- c('design', 'groupX', 'groupY')
+
+# merging the group centroids with the rest of the NMDS data #
+metanmds <- merge(metanmds, NMDS.mean, by.x = "Treatment", by.y="design")
+str(metanmds)
+
+#plot the ggplot-BC
+ggplot(metanmds, aes(x=MDS1, y=MDS2)) +
+  geom_point(aes(color=Treatment, shape=Diet)) +
+  labs(x='NMDS 1', y= 'NMDS 2', caption = paste('Ordination stress: ', round(BC.nmds$stress, digits = 2))) +
+  stat_ellipse(aes(color=Treatment), level = 0.95, type = "t") +
+  theme(legend.title = element_blank()) 
+
+ggsave("~/Downloads/Yu_Microbiota_Analysis/Output/nmds_ellipses_all.png", height = 3, width = 4)
+
+```
+
+#for Jaccard metric, which only takes into account presence/absence (*i.e.* richness).
+```{r}
+J.nmds = metaMDS(OTU.clean, distance="jaccard", k=2, trymax=1000)
+
+#if running line-by-line run this entire block at one time.
+plot(J.nmds, type="n", main="Jaccard")
+points(J.nmds, display="sites", pch=20, col=my_colors[meta$Treatment])
+#Add a legend
+legend(-5, 2.5, legend=levels(meta$Treatment), col=my_colors, pch=20)
+
+ggsave("~/Downloads/Yu_Microbiota_Analysis/Output/nmds_JACCARD.png", height = 3, width = 4)
+
+```
+
+#ggplot for Jaccard
+```{r}
+J.nmds$stress
+
+# I like to merge my NMDS coordinates in together with my metadata to make one big dataframe, I think this makes plotting easier later on
+
+nmds2 <-as.data.frame(J.nmds$points)
+metanmds2 <- merge(meta, nmds2, by.x = 0, by.y = 0)
+row.names(metanmds2) <- metanmds2[,1]
+metanmds2 <- metanmds2[,-1]
+str(metanmds2)
+metanmds2$Treatment <- factor(metanmds2$Treatment)
+
+# this generates a dataframe containing the group centroids
+
+#The following line you may need to modify to indicate the column numbers that contain MDS1 and MDS2
+NMDS2.mean <- aggregate(metanmds2[,24:25], list(group=metanmds2$Treatment), mean)
+colnames(NMDS2.mean) <- c('design', 'groupX', 'groupY')
+
+# merging the group centroids with the rest of the NMDS data #
+metanmds2 <- merge(metanmds2, NMDS2.mean, by.x = "Treatment", by.y="design")
+
+str(metanmds2)
+
+#plot Jaccard-ggplot
+ggplot(metanmds2, aes(x=MDS1, y=MDS2)) +
+  geom_point(aes(color=Treatment, shape=Diet)) +
+  labs(x='NMDS 1', y= 'NMDS 2', caption = paste('Ordination stress: ', round(J.nmds$stress, digits = 2))) +
+  stat_ellipse(aes(color=Treatment), level = 0.95) +
+  theme(legend.title = element_blank()) 
+
+ggsave("~/Downloads/Yu_Microbiota_Analysis/Output/nmds_jaccard_all.png", height = 3, width = 4)
+```
+
+
+###PERMANOVA
+```{r}
+#Calculate distance and save as a matrix
+BC.dist=vegdist(OTU.clean, distance="bray")
+#Run PERMANOVA on distances.
+adonis(BC.dist ~ Diet*Genotype, data = meta, permutations = 1000)
+
+adonis(J.dist ~ Diet*Genotype, data = meta, permutations = 1000)
+
+```
+
+Similarly for Jaccard
+```{r}
+J.dist=vegdist(OTU.clean, distance="jaccard")
+adonis(J.dist ~ Diet*Genotype, data = meta, permutations = 1000)
+
+#pairwise PERMANOVA to test for interaction
+
+```
+#Pairwise.adonis
+```{r}
+pairwise.adonis <- function(x,factors, sim.function = 'vegdist', sim.method = 'bray', p.adjust.m ='bonferroni')
+{
+library(vegan)
+
+co = combn(unique(as.character(factors)),2)
+pairs = c()
+F.Model =c()
+R2 = c()
+p.value = c()
+
+
+for(elem in 1:ncol(co)){
+if(sim.function == 'daisy'){
+library(cluster); x1 = daisy(x[factors %in% c(co[1,elem],co[2,elem]),],metric=sim.method)
+} else{x1 = vegdist(x[factors %in% c(co[1,elem],co[2,elem]),],method=sim.method)}
+
+ad = adonis(x1 ~ factors[factors %in% c(co[1,elem],co[2,elem])] );
+pairs = c(pairs,paste(co[1,elem],'vs',co[2,elem]));
+F.Model =c(F.Model,ad$aov.tab[1,4]);
+R2 = c(R2,ad$aov.tab[1,5]);
+p.value = c(p.value,ad$aov.tab[1,6])
+}
+p.adjusted = p.adjust(p.value,method=p.adjust.m)
+sig = c(rep('',length(p.adjusted)))
+sig[p.adjusted <= 0.05] <-'.'
+sig[p.adjusted <= 0.01] <-'*'
+sig[p.adjusted <= 0.001] <-'**'
+sig[p.adjusted <= 0.0001] <-'***'
+
+pairw.res = data.frame(pairs,F.Model,R2,p.value,p.adjusted,sig)
+print("Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1")
+return(pairw.res)
+
+} 
+
+## end of function here
+
+#change only the follwoing lines
+data(meta)
+pairwise.adonis(meta, meta$Treatment, sim.method="bray", p.adjust.m = "BH")
+```
+
+***Beta dispersion
+```{r}
+#Calculate dispersion (variances) within each group.
+disp.treatment = betadisper(BC.dist, meta$Treatment)
+#Perform an ANOVA-like test to determine if the variances differ by groups.
+permutest(disp.treatment, pairwise=TRUE, permutations=1000)
+
+#Combining this with our plot,
+plot(BC.nmds, type="n", main="Bray-Curtis")
+legend(.6,-2, legend=c("wsoy","csoy","wpsm","cpsm"), col=c("green","red","blue","black"), pch=20)
+ordiellipse(BC.nmds, groups=meta$Treatment, display="sites", kind="se", conf=0.99, label=FALSE, col="green", draw="polygon", alpha=200, show.groups = c("wsoy"), border=FALSE)
+ordiellipse(BC.nmds, groups=meta$Treatment, display="sites", kind="se", conf=0.99, label=FALSE, col="red", draw="polygon", alpha=200, show.groups = c("csoy"), border=FALSE)
+ordiellipse(BC.nmds, groups=meta$Treatment, display="sites", kind="se", conf=0.99, label=FALSE, col="blue", draw="polygon", alpha=200, show.groups = c("wpsm"), border=FALSE)
+ordiellipse(BC.nmds, groups=meta$Treatment, display="sites", kind="se", conf=0.99, label=FALSE, col="black", draw="polygon", alpha=200, show.groups = c("cpsm"), border=FALSE)
+```
+
+#OTUs that differ by
+##Categorical variables
+#Simper
+```{r}
+simper(OTU.clean, meta$Treatment, permutations=100)
+simper(OTU.clean, meta$Diet, permutations=100)
+```
+
+#FDR correction
+
+working_dir <- "~/Downloads/Yu_Microbiota_Analysis/Metastats"
+
+
+##this block of code is to set up the output directories and read taxonomy file
+setwd(working_dir)
+output_dir <- paste0(working_dir, "/fdr.corrected_out")
+
+directories <- list.dirs(path = ".", full.names = F)
+directories <- directories[-1]  
+
+taxonomy_file <- list.files(recursive = F)
+taxonomy_file <- taxonomy_file[!file.info(taxonomy_file)$isdir]
+taxonomy <- read.table(file = taxonomy_file, header = T)
+taxonomy <- taxonomy[,-2]
+
+
+#This block of code uses the FDR correction to correct the metastats outputs and saves them
+dir.create(output_dir)
+for(i in 1:length(directories)){
+  temp_files <- list.files(directories[i])
+  print(paste("working on", directories[i]))
+  dir.create(paste(output_dir,"/",directories[i], "_FDR.corrected", sep = ""))
+  
+  for(j in 1:length(temp_files)){
+    metastat <- read.table(file = paste(directories[i],"/",temp_files[j], sep = ""), skip = 6, header = T)
+    metastat <- metastat[which(rowSums(metastat[,2:7])>0|rowSums(metastat[,2:7])>NA),]
+    if(nrow(metastat)>0){
+      metastat$q.value <- p.adjust(metastat$p.value, method = "BH")
+      metastat_tax <- merge(x = metastat, y = taxonomy, by = "OTU", all.x = TRUE)
+      metastat_tax <- metastat_tax[order(metastat_tax[,9]), ]
+      metastat_tax <- metastat_tax %>%
+        separate(Taxonomy, c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), ";")
+      
+      write.csv(metastat_tax, file = paste(output_dir, "/", directories[i], "_FDR.corrected", "/", temp_files[j], ".csv", sep = ""), row.names = F, quote = F)
+      
+    }
+  }
+}
